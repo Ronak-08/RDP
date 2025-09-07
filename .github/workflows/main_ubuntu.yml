@@ -1,118 +1,64 @@
-name: CI [Ubuntu]
+name: 🖥️ Launch Private Ubuntu RDP VM (via Tailscale)
 
-on: [workflow_dispatch]
+on:
+  workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-
     steps:
-    - name: Adding Architecture amd64
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Tailscale
       run: |
-        sudo apt update
-        sudo apt install -y qemu-user-static binfmt-support
-        sudo dpkg --add-architecture amd64
-        sudo apt update
-        sudo apt install libc6:amd64
-    - name: Creating New User
+        curl -fsSL https://tailscale.com/install.sh | sh
+
+    - name: Connect to Tailscale
       run: |
-        user=your_selected_account_name
-        password=your_supersecret_password
-        sudo adduser --quiet --disabled-password --shell /bin/bash --home /home/$user --gecos "User" $user
-        # set password
-        echo "$user:$password" | sudo chpasswd
-        echo User: $user has been created with password: $password
-        sudo usermod -aG sudo $user
-        #SCRIPT END
-    - name: Install Unzipper
-      run: sudo apt-get install unzip -y
-    - name: Ngrok Downloading(Linux)
-      run: wget -O ngrok.tgz https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm.tgz
-    # run: wget -O ngrok.zip https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-arm.zip
-    - name: Ngrok Extracting(Linux)
-      run: tar zxvf ngrok.tgz
-    # run: unzip ngrok.tgz
-    - name: Ngrok Make Executable
-      run: sudo cp ./ngrok /usr/bin/ngrok
-    - name: Ngrok Auth
-      run: ngrok authtoken $NGROK_AUTH_TOKEN
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-actions-rdp
       env:
-        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-#      run: ngrok config add-authtoken $Env:NGROK_AUTH_TOKEN
-    - name: Install Libraries
-      run: |
-        sudo add-apt-repository main
-        sudo add-apt-repository universe
-        sudo add-apt-repository restricted
-        sudo add-apt-repository multiverse
-        sudo apt install snapd
-        sudo apt install openssh-server
-        sudo systemctl status ssh
-        sudo apt-get update # mass install
-        sudo apt install ubuntu-desktop
-        sudo apt install xorg
-        sudo apt install xrdp
-        sudo apt install xorgxrdp
-        sudo apt install xserver-xorg-core
-        sudo apt install xserver-xorg-input-all
-        sudo apt install xfonts-base
-        sudo apt install xfonts-75dpi
-        sudo apt install xfonts-100dpi
-        sudo apt install mate-core
-        sudo apt install mate-desktop-environment
-        sudo apt install mate-notification-daemon
-        sudo apt install ubuntu-gnome-desktop
-        sudo apt install gnome-session-flashback
-        sudo apt install gnome-panel
-        sudo apt install xfce4
-        sudo apt install xfce4-goodies
-        sudo apt-get autoremove -y
+        # Pipe the output of 'tailscale ip' to a file for the next step
+        TAILSCALE_IP_CMD: "sudo tailscale ip -4"
 
-    - name: Auth
+    - name: Get Tailscale IP
+      id: get_ip
       run: |
-        sudo bash -c 'cat > /etc/polkit-1/localauthority.conf.d/02-allow-colord.conf' << EOF
-        polkit.addRule(function(action, subject) {
-        if ((action.id == "org.freedesktop.color-manager.create-device" ||
-        action.id == "org.freedesktop.color-manager.create-profile" ||
-        action.id == "org.freedesktop.color-manager.delete-device" ||
-        action.id == "org.freedesktop.color-manager.delete-profile" ||
-        action.id == "org.freedesktop.color-manager.modify-device" ||
-        action.id == "org.freedesktop.color-manager.modify-profile") &&
-        subject.isInGroup("{users}")) {
-        return polkit.Result.YES;
-        }
-        });
-        EOF
-    - name: Config RDP in Ubuntu(XRDP)
+        # Sleep for a moment to ensure Tailscale is fully connected and has an IP
+        sleep 5
+        echo "TAILSCALE_IP=$(sudo tailscale ip -4)" >> $GITHUB_OUTPUT
+
+    - name: Install XFCE4 and XRDP
       run: |
-       sudo ufw allow 3389/tcp #setting tcp port
-       if [ -f /home/${USER}/.xsession ]; then #session manager
-           rm -f /home/${USER}/.xsession
-       fi
-       cat << 'EOF' >> /home/${USER}/.xsession
-       export LOGNAME=$USER
-       export LIBGL_ALWAYS_INDIRECT=1
-       unset SESSION_MANAGER
-       unset DBUS_SESSION_BUS_ADDRESS
-       mate-session
-       EOF
-       chmod +x /home/${USER}/.xsession #session manager
-    - name: Run Bash
-      run: sudo sed -i "s|#\!/bin/sh|#\!/bin/bash|g" /etc/X11/Xsession
-    - name: Starting XRDP
-      run: |
-        sudo adduser xrdp ssl-cert
+        sudo apt update
+        sudo DEBIAN_FRONTEND=noninteractive apt install -y xfce4 xrdp
+        sudo systemctl enable xrdp
+        echo xfce4-session > ~/.xsession
+        sudo cp ~/.xsession /etc/skel
         sudo service xrdp restart
-        sudo service xrdp status
-    - name: Config Of XRDP vim
-      run: |
-        sudo apt install nano -y
-        echo `cat /etc/xrdp/xrdp.ini`
 
-    - name: Create Tunnel
-      run: ngrok tcp 3389 &
-    - name: ngrok is now listening to VNC connections on...
-      run: curl --silent http://127.0.0.1:4040/api/tunnels | jq '.tunnels[0].public_url'
-    - name: Setup tmate session
-      uses: mxschmitt/action-tmate@v2
+    - name: Generate RDP Password
+      run: |
+        # Generate a random strong password
+        password=$(openssl rand -base64 15)
+        echo "ubuntu:$password" | sudo chpasswd
+        # Store the password in a GitHub environment file
+        echo "RDP_PASSWORD=$password" >> $GITHUB_ENV
+        echo "🟢 RDP Password has been set."
+
+    - name: Display Connection Information
+      run: |
+        echo "========================================"
+        echo "          RDP VM is Ready!              "
+        echo "========================================"
+        echo "🌐 Connect using your RDP client to:"
+        echo "   Address: ${{ steps.get_ip.outputs.TAILSCALE_IP }}"
+        echo "   Username: ubuntu"
+        echo "   Password: ${{ env.RDP_PASSWORD }}"
+        echo "========================================"
+        echo "🔒 Secure: This VM is ONLY accessible via your private Tailscale network."
+        echo "⚠️  Temporary: This VM will self-destruct in ~6 hours."
+        echo "========================================"
+
+    - name: Keep alive
+      run: sleep 4000 # Max time allowed
