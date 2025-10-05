@@ -1,108 +1,53 @@
-name: 🖥️ Ubuntu RDP via Tailscale
+name: Linux RDP
 
-on:
-  workflow_dispatch:
+on: [push, workflow_dispatch]
 
 jobs:
-  secure-rdp:
+  linux-rdp:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # 6 hour max for a job
+    timeout-minutes: 9999
 
     steps:
-      - name: Install XRDP and XFCE4
-        run: |
-          sudo apt-get update
-          # Install the desktop environment and RDP server
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 xrdp
-          # Configure XRDP to use the XFCE session
-          echo xfce4-session > ~/.xsession
-          sudo cp ~/.xsession /etc/skel
-          # Start and enable the xrdp service
-          sudo systemctl enable xrdp
-          sudo systemctl restart xrdp
+    - name: Install Desktop Environment
+      run: |
+        sudo apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          xfce4 \
+          xfce4-goodies \
+          xrdp \
+          firefox \
+          filezilla
+        
+        # Configure xRDP to use XFCE
+        echo xfce4-session > ~/.xsession
+        sudo systemctl enable xrdp
+        sudo systemctl start xrdp
+        
+        # Set password for current user (ubuntu)
+        echo "ubuntu:Pass123456" | sudo chpasswd
 
-      - name: Create RDP User with Secure Password
-        run: |
-          # Generate a strong, random password (similar complexity to your Windows example)
-          PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | cut -c1-20)
-          # Create the user (if it doesn't exist) and set the password
-          if ! id "rdpuser" &>/dev/null; then
-            sudo useradd -m -s /bin/bash rdpuser
-          fi
-          echo "rdpuser:$PASSWORD" | sudo chpasswd
-          # Add user to necessary groups for admin and RDP access
-          sudo usermod -aG sudo,adm rdpuser
-          # Store the credentials for later steps
-          echo "RDP_CREDS=User: rdpuser | Password: $PASSWORD" >> $GITHUB_ENV
-          echo "RDP_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+    - name: Install Ngrok
+      run: |
+        wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+        tar xzf ngrok-v3-stable-linux-amd64.tgz
+        chmod +x ngrok
 
-      - name: Install Tailscale
-        run: |
-          # Add Tailscale's signing key and repository
-          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/$(lsb_release -cs).gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
-          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/$(lsb_release -cs).list | sudo tee /etc/apt/sources.list.d/tailscale.list
-          # Install Tailscale
-          sudo apt-get update
-          sudo apt-get install -y tailscale
+    - name: Setup Ngrok Auth
+      run: |
+        ./ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
 
-      - name: Establish Tailscale Connection
-        run: |
-          # Bring up Tailscale with the auth key
-          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-linux-runner-${{ github.run_id }}
-          # Wait a moment and get the Tailscale IP
-          sleep 5
-          TAILSCALE_IP=$(sudo tailscale ip -4)
-          # Check if we got an IP, fail the workflow if not
-          if [ -z "$TAILSCALE_IP" ]; then
-            echo "ERROR: Tailscale failed to assign an IP address."
-            exit 1
-          fi
-          echo "TAILSCALE_IP=$TAILSCALE_IP" >> $GITHUB_ENV
-          echo "Tailscale IP: $TAILSCALE_IP"
+    - name: Start Ngrok Tunnel
+      run: |
+        ./ngrok tcp 3389 --log=stdout > ngrok.log &
+        sleep 10
+        echo "Ngrok tunnel established:"
+        curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url'
 
-      - name: Configure Firewall (Optional but Explicit)
-        run: |
-          # GitHub Actions runners typically have no firewall rules blocking ports.
-          # This step explicitly allows port 3389 (xrdp) for clarity and safety.
-          # Install UFW if not present, allow OpenSSH (port 22) and XRDP (port 3389), and enable it.
-          sudo apt-get install -y ufw
-          sudo ufw allow OpenSSH
-          sudo ufw allow 3389/tcp
-          echo "y" | sudo ufw enable # The "y" confirms the command
-          sudo ufw status verbose
-
-      - name: Verify RDP Accessibility
-        run: |
-          echo "Verifying XRDP service is listening on port 3389..."
-          sudo netstat -tulpn | grep :3389 || exit 1
-          echo "XRDP service is active."
-          echo "Testing connectivity from localhost..."
-          # Use nc (netcat) to test if the port is open locally
-          nc -zv localhost 3389 || exit 1
-          echo "Local connectivity test passed."
-
-      - name: Display Connection Information
-        run: |
-          echo " "
-          echo "=========================================="
-          echo "       UBUNTU RDP VM IS READY!            "
-          echo "=========================================="
-          echo "🌐 Connect using your RDP client (e.g., Microsoft Remote Desktop) to:"
-          echo "   Address: ${{ env.TAILSCALE_IP }}"
-          echo "   Username: rdpuser"
-          echo "   Password: ${{ env.RDP_PASSWORD }}"
-          echo " "
-          echo "🔒 Secure: This VM is ONLY accessible via your private Tailscale network."
-          echo "⚠️  Temporary: This VM will self-destruct after 6 hours or when cancelled."
-          echo "=========================================="
-          echo " "
-
-      - name: Maintain Connection
-        run: |
-          # This step just keeps the workflow running for the maximum allowed time.
-          # The while loop prints a message every 60 seconds to prevent timeout.
-          MINUTES=360 # 6 hours
-          for ((i=0; i<MINUTES; i++)); do
-            echo "[$(date)] RDP session active. Time elapsed: ${i}m. Cancel the workflow to terminate."
-            sleep 60
-          done
+    - name: Keep Alive
+      run: |
+        # Keep the runner alive for maximum time
+        echo "RDP session active. Use the ngrok URL above to connect."
+        echo "Username: ubuntu"
+        echo "Password: Pass123456"
+        echo "Session will timeout after 360 minutes or when cancelled."
+        sleep 21600  # 6 hours max
