@@ -5,10 +5,13 @@ on: [push, workflow_dispatch]
 jobs:
   linux-rdp:
     runs-on: ubuntu-latest
-    timeout-minutes: 9999
+    timeout-minutes: 360 # Set to the maximum of 6 hours
 
     steps:
-    - name: Install Desktop Environment
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    - name: Install Desktop Environment, xRDP, and other tools
       run: |
         sudo apt-get update
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -18,36 +21,42 @@ jobs:
           firefox \
           filezilla
         
-        # Configure xRDP to use XFCE
-        echo xfce4-session > ~/.xsession
-        sudo systemctl enable xrdp
-        sudo systemctl start xrdp
+    - name: Configure xRDP
+      run: |
+        # Set the session for the runner user
+        echo "xfce4-session" > /home/runner/.xsession
         
-        # Set password for current user (ubuntu)
-        echo "ubuntu:Pass123456" | sudo chpasswd
-
-    - name: Install Ngrok
+        # Configure xrdp to use the correct display
+        sudo sed -i 's/port=3389/port=tcp:\/\/:3389/g' /etc/xrdp/xrdp.ini
+        
+        # Set a password for the runner user
+        echo "runner:your-strong-password" | sudo chpasswd
+        
+    - name: Start xRDP Service
+      run: |
+        # Start the xrdp service directly
+        sudo /etc/init.d/xrdp start
+        
+    - name: Install and Start Ngrok
       run: |
         wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
         tar xzf ngrok-v3-stable-linux-amd64.tgz
         chmod +x ngrok
-
-    - name: Setup Ngrok Auth
-      run: |
         ./ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-
-    - name: Start Ngrok Tunnel
-      run: |
-        ./ngrok tcp 3389 --log=stdout > ngrok.log &
+        
+        # Start ngrok in the background
+        nohup ./ngrok tcp 3389 &
+        
+        # Give ngrok some time to start
         sleep 10
-        echo "Ngrok tunnel established:"
-        curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url'
-
-    - name: Keep Alive
+        
+        # Get the public URL from the ngrok API
+        NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r ".tunnels[0].public_url")
+        echo "RDP Address: ${NGROK_URL}"
+        echo "Username: runner"
+        echo "Password: your-strong-password"
+        
+    - name: Keep the Job Alive
       run: |
-        # Keep the runner alive for maximum time
-        echo "RDP session active. Use the ngrok URL above to connect."
-        echo "Username: ubuntu"
-        echo "Password: Pass123456"
-        echo "Session will timeout after 360 minutes or when cancelled."
-        sleep 21600  # 6 hours max
+        # This will keep the runner alive for approximately 6 hours.
+        sleep 21000
